@@ -1,0 +1,662 @@
+# LEFT! LEFT! LEFT!
+
+**DRIVE BLIND. NAVIGATE LOUD. SURVIVE THE CABIN.**
+
+An asymmetrical two-player co-op rally game for the desktop browser. Two players share one faded
+orange-red hatchback:
+
+- **The Driver** sits behind a real steering wheel in a first-person cockpit. No minimap, no GPS, no
+  arrows. Just a narrow gravel road, dense low-poly forest, mud on the windscreen and a co-driver yelling.
+- **The Navigator** holds a *physical* navigation tablet that rattles around the cabin. It shows a
+  heading-up map, the next turn, the distance and the route, but it's a real physics object. Hard corners
+  drain your grip, crashes knock it out of your hands, and it can slide into the driver's footwell.
+
+Two maps - the forested **countryside** and a narrow road carved into a steep **mountain** with real
+drops - by day or at night. At night the tablet is only readable where the navigator's head lamp actually
+lights it, and that same lamp can blind the driver. Get stuck, and you both climb out and haul the car free
+by its tow hooks; go over the edge on the mountain and the car falls for real.
+
+Built with **Vite + TypeScript + Three.js + Rapier 3D + Socket.IO (Node.js) + WebRTC**. Everything (models,
+textures, sounds) is procedural, so no assets need to be imported.
+
+---
+
+## Quick start
+
+Requirements: **Node.js 20.19+** (22 LTS recommended) and a modern Chromium browser (Chrome / Edge).
+Firefox also works.
+
+```bash
+npm install
+npm run dev
+```
+
+`npm run dev` starts both processes:
+
+| Process | URL | Notes |
+| --- | --- | --- |
+| Vite client | http://localhost:5173 | open this in the browser |
+| Game server (Socket.IO) | http://localhost:3001 | Vite proxies `/socket.io` and `/health` to it |
+
+The main menu shows **"Game server online"** when the client can reach the server. If the server is not
+running, online buttons are disabled and the menu says so. Offline modes still work.
+
+### Production build
+
+```bash
+npm run build     # typecheck (client + server) -> vite build -> bundle server with esbuild
+npm start         # node dist-server/index.js: serves dist/ and Socket.IO on GAME_PORT (default 3001)
+```
+
+Then open http://localhost:3001. To host for a friend over the internet, run `npm start` on a reachable
+machine (or behind a reverse proxy with WebSocket support) and share the URL.
+
+### Deploying
+
+Static hosts like **GitHub Pages, Netlify, Vercel or Cloudflare Pages can only serve the client**. They
+cannot run the Socket.IO game server (it needs a long-running Node.js process holding WebSocket
+connections), so online play shows "Game server offline" there. Offline modes still work.
+
+**Option A: Render only (simplest).** On [Render](https://render.com) use *New > Blueprint* and pick
+your repo; the included `render.yaml` builds and serves the whole game (client + multiplayer) from one URL.
+No other configuration is needed. (Any Node host with WebSocket support works the same way: build
+`npm ci --include=dev && npm run build`, start `npm start`; the server listens on the host's `PORT`.)
+
+**Option B: GitHub Pages (client) + Render (game server).**
+1. Push the repo to GitHub and deploy the server on Render as in option A. Note its URL, e.g.
+   `https://left-left-left-server.onrender.com`.
+2. On Render, set the service's environment variable `CORS_ORIGIN` to your Pages origin, e.g.
+   `https://your-name.github.io` (no path, no trailing slash).
+3. On GitHub: *Settings > Secrets and variables > Actions > Variables*, add `VITE_SERVER_URL` = the Render
+   URL.
+4. On GitHub: *Settings > Pages > Source: GitHub Actions*. The included workflow
+   (`.github/workflows/pages.yml`) builds and publishes on every push to `main`; run it once manually
+   (*Actions > Deploy to GitHub Pages > Run workflow*) after adding the variable.
+5. Open `https://your-name.github.io/leftleftleft/`: the menu should say **Game server online**.
+
+The build uses relative asset paths, so it works both at a domain root and in a Pages sub-folder.
+
+**Option C: Netlify (client) + Render (game server).**
+1. Deploy the server on Render as in option A.
+2. On Render set `CORS_ORIGIN` to your Netlify URL, e.g. `https://my-rally.netlify.app`.
+3. In Netlify set the environment variable `VITE_SERVER_URL` to the server URL (e.g.
+   `https://left-left-left-server.onrender.com`) and **redeploy**. Vite bakes it into the bundle at build
+   time, so dragging an old `dist/` folder onto Netlify won't pick it up. Build with
+   `VITE_SERVER_URL=... npm run build:client` before uploading, or let Netlify build from the repo (the
+   included `netlify.toml` does that).
+4. Open the Netlify site: the menu should say **Game server online**.
+
+**Player statistics need a persistent database.** Render's free web services have no persistent disk, so
+the built-in embedded database would be wiped on every deploy or restart there. Create a free Postgres
+database (e.g. [Neon](https://neon.tech) or [Supabase](https://supabase.com)), copy its connection string
+and set it as `DATABASE_URL` in the Render service's environment (use `DATABASE_SSL=no-verify` if the
+provider's certificate isn't trusted by Node). The server creates its tables on start.
+
+Free server tiers (e.g. Render free) sleep when idle; the first visit can take ~30-60 s while the server
+wakes up. Reload the menu once it's up.
+
+### Configuration
+
+Copy `.env.example` to `.env` to override defaults:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `GAME_PORT` | `3001` | Port of the game server (also serves the production build). In production `PORT` (set by hosting platforms) is used when `GAME_PORT` is not set |
+| `CLIENT_PORT` | `5173` | Vite dev server port |
+| `CORS_ORIGIN` | `*` | Allowed origins (comma separated) when the client is served from another origin, e.g. your Netlify URL |
+| `RECONNECT_GRACE_SECONDS` | `60` | How long a disconnected player's seat is kept |
+| `VITE_SERVER_URL` | (empty) | Client connects to this server instead of its own origin |
+| `VITE_STUN_URLS` | Google STUN | Comma-separated STUN/TURN URLs for built-in voice chat |
+| `DATABASE_URL` | (empty) | Postgres connection string for player statistics (hosted Postgres in production) |
+| `DATABASE_SSL` | (empty) | `no-verify` to accept the database's TLS certificate without verification |
+| `STATS_DB_DIR` | `./.data/stats` | Folder of the embedded Postgres used when `DATABASE_URL` is empty |
+| `FINISH_WINDOW_MS` | `60000` | Versus: how long the other cars have after the winner before they are DNF |
+
+> The server uses `GAME_PORT` (not `PORT`) on purpose: many tools set `PORT` for the web dev server, and
+> the two would collide.
+
+---
+
+## Testing with two browser windows (one computer)
+
+1. Run `npm run dev`.
+2. Open **two separate browser windows** (not tabs) at http://localhost:5173 and place them side by side.
+   Browsers throttle background tabs, so separate windows keep both games running smoothly. (If a tab is
+   backgrounded anyway, the game falls back to a ~10 Hz timer loop so the shared car keeps moving.)
+3. Window A: enter a name → **CREATE ONLINE GAME**. Note the 4-letter room code.
+4. Window B: enter a name, type the code → **JOIN WITH CODE**.
+5. Roles are auto-assigned (creator = Driver). Swap them by clicking the role buttons if you like.
+6. The host can pick the stage length / reroll the road. Both press **READY!**
+7. Both clients build the same stage from the shared seed (checksums are verified), then a 3-second
+   countdown starts.
+8. In the Navigator window press **F** to pick up the tablet, then shout (or press `1`-`0`).
+
+On two computers in the same LAN: open `http://<host-ip>:5173` on the second machine (Vite listens on all
+interfaces). For built-in voice chat the page must be a secure context (`https://` or `localhost`), so on a
+LAN use Discord or any external voice app instead (the game is designed to work great with it).
+
+### Local / offline modes (no server needed)
+
+- **COUCH CO-OP · SPLIT SCREEN**: both roles on one machine. Left half = driver (WASD), right half =
+  navigator (mouse + arrow keys). This is the local development mode; it runs the exact same server
+  authority code in-process.
+- **SOLO PRACTICE**: you drive while an AI co-driver holds the tablet and reads pace notes computed from the
+  real road (at night it switches its head lamp on and looks at the tablet). It drops the tablet in crashes
+  too, and goes quiet until it picks it back up.
+
+Pick **COUNTRYSIDE / MOUNTAIN** and **DAY / NIGHT** in the main menu (local modes) or in the lobby (host,
+online).
+
+### Reconnecting
+
+Refreshing the page or losing the connection mid-stage pauses the race for both players (the stage clock
+stops). The menu offers **REJOIN ROOM XXXX** (the seat token lives in `sessionStorage`), the stage is rebuilt
+and the race resumes from the last server-validated car state. Socket.IO also reconnects transparently on
+short network drops. After `RECONNECT_GRACE_SECONDS` the seat is released and the room returns to the lobby.
+
+---
+
+## Controls
+
+**Hold `Tab`** in game for a compact overlay listing exactly the controls that work for your role right
+now (in the car, holding the tablet, on foot next to a tow hook…). It doesn't pause the game. All bindings
+live in `src/core/Bindings.ts`, and the overlay, pause screen and help screen are generated from it.
+
+### Driver (online / solo)
+| Key | Action |
+| --- | --- |
+| `W` / `↑` | Throttle (automatic gearbox) |
+| `S` / `↓` | Brake, hold at a standstill to reverse |
+| `A` `D` / `←` `→` | Steer (speed-sensitive, rate-limited) |
+| `Space` | Handbrake (right hand moves to the lever) |
+| `V` | One wiper sweep (out and back to rest; holding doesn't repeat, press again for another) |
+| hold `C` | Wipe the windscreen by hand where you look (one hand off the wheel = less steering) |
+| `G` | Close your door if it flew open (left hand reaches for the handle) |
+| `H` | Horn (also shoos cows off the road) |
+| `E` | Get out (car stopped) / get back in (standing at your door) |
+| hold `R` | Emergency reset onto the road: last resort, +5 s penalty |
+| Mouse (click to capture) | Look around, e.g. glance at the navigator's tablet |
+| Gamepad | Left stick steer, triggers throttle/brake, A/RB handbrake, hold Y emergency reset |
+
+**On foot:** `WASD` walk, mouse look, `Shift` run, **hold left mouse** next to a tow hook to grip it, then walk
+away from the car (e.g. backwards with `S`) to pull; release to let go. `E` at your door gets you back in.
+
+### Navigator (online)
+| Key | Action |
+| --- | --- |
+| Click the game | Capture the mouse (`Esc` frees it again and opens the menu) |
+| Mouse | Look around the cabin freely (driver, dashboard, windows, road); a held object stays in front of you |
+| Left click | Grab what the centre crosshair is on (tablet, loose object, door handle) / put down what you hold |
+| Mouse wheel | Hold it closer / farther |
+| `←` `→` / `↑` `↓` | Turn / tilt the held object - e.g. show the screen to the driver! |
+| Middle-drag | Rotate the held object (the view stays put meanwhile) |
+| hold `Q` | Pick up the tablet without aiming; leaning extends your reach |
+| `G` | Head lamp on / off (in the car and on foot) |
+| hold `X` | Point with your arm where you look (the driver sees it) |
+| `C` | Close your door |
+| `E` | Get out (car stopped) / get back in (standing at your door) |
+| `1`-`0` | Shout: LEFT! · LEFT, LEFT, LEFT! · RIGHT! · RIGHT, RIGHT, RIGHT! · BRAKE! · STRAIGHT! · NO, THE OTHER LEFT/RIGHT! · WE MISSED IT! · WHY ARE YOU STILL ACCELERATING?! · JUMP! |
+| `-` | Shout what is on the road ahead: COW! COW! COW! · SHEEP! SHEEP ON THE ROAD! · TRACTOR AHEAD! |
+| `Space` | Read the next pace note aloud (only if you can actually see the tablet - at night, lit by the lamp) |
+| `T` | Push-to-talk (if enabled for built-in voice chat) |
+
+Without the mouse captured, the cursor mode still works: point and click at objects, hold right mouse to look.
+
+**On foot:** same as the driver: `WASD`, mouse, `Shift`, hold left mouse on a tow hook, `E` at your door;
+`G` for the head lamp.
+
+### Split screen (couch)
+No key is shared between the two players:
+
+- **Driver:** `WASD`, `Space` handbrake, `V` wiper sweep, hold `C` hand-wipe, `G` door, `H` horn, hold `Q` glance
+  at the tablet, `E` out / in, hold `R` emergency reset. On foot: `W`/`S` walk, `A`/`D` turn, `Left Shift` run,
+  hold `Space` grip a tow hook.
+- **Navigator:** click to capture the mouse, mouse look + centre crosshair, arrow keys turn/tilt, hold
+  `Right Shift` pick up / lean, `L` head lamp (`G` is the driver's door key here), hold `X` point, `Enter` read
+  note, `P` out / in. On foot: arrow keys walk, mouse look, `Right Ctrl` run, hold left mouse grip a tow hook.
+
+`Esc` pauses (offline) / opens the menu (online, where the stage keeps running).
+
+---
+
+## Features (implemented)
+
+### Driving
+- Custom **raycast vehicle** on a Rapier rigid body: per-wheel spring/damper suspension with bump stops,
+  anti-roll bars, slip-angle tyre model with a friction circle, rear-biased **all-wheel drive**, weight
+  transfer, lift-off/braking oversteer, **handbrake turns** (the handbrake decouples the rear axle), rolling
+  resistance and aero drag.
+- **Predictable handling** (all difficulties): grippy gravel that gives way progressively instead of
+  snapping, rear tyres gripping a touch more than the fronts (a slight understeer bias instead of spins),
+  steering that calms down with speed, and turn-in help / stability control that only ever aim for the yaw
+  rate the tyres can actually deliver (asking for more is what spun the car before). Grass is looser, mud
+  is properly slippery, and **handbrake turns** still rotate the car (stability control steps aside while
+  the handbrake is pulled). Measured by `scripts/handling-test.ts`: a 70 km/h lane change now peaks at
+  ~5-11° of slide instead of a spin; a handbrake turn at 50 km/h still swings the car round ~100-125°.
+- Fast and twitchy: about 0-100 km/h in 5.2 s and ~158 km/h flat out (headless measurement), on a narrow
+  gravel road (5.1 m wide) with tight corners, hairpins, blind crests and trees close to the edge.
+- Surfaces: loose gravel road, grass (less grip, more drag), **mud puddles** (very slippery).
+- Engine torque curve, **5-speed automatic gearbox only**, with launch slip, rpm-based downshifts, reverse logic, rev
+  limiter and engine braking.
+- Speed-sensitive, rate-limited steering with a little extra lock at low / medium speed and an arcade
+  **turn-in assist**: below ~115 km/h, when the front tyres alone would plough on, a yaw torque helps the nose
+  follow the steered wheels - but only up to the steering geometry, so slides, oversteer and spins stay
+  entirely the tyres' business. Steering authority drops while a hand is off the wheel.
+- Collisions with trees, rocks, gates, terrain and **dynamic hay bales** (knocked around and synced).
+  Impacts are measured from contact forces; landings after jumps are detected separately.
+- Fixed 60 Hz physics timestep with accumulator, max-steps clamp, and render interpolation.
+- **Speed blur** (local post-process, nothing is sent over the network): from ~55 km/h the scenery outside
+  is blurred radially away from the direction of travel, growing to full strength at ~165 km/h and fading as
+  you slow. It's selective: the exterior is rendered on its own and blurred by depth (the car's own bonnet
+  and the road straight ahead stay sharp, roadside trees towards the edges streak most), then the dashboard,
+  wheel, hands, mirrors and windscreen are drawn sharp on top.
+- Emergency reset (hold `R`, +5 s, server-validated); automatic reset only after 6 s upside down or when
+  lost far off the route.
+
+### Cockpit
+- Procedural interior, painted in the livery's body colour like a stripped-out rally car: dark anti-glare
+  dash, analogue speedo/tach (canvas texture) with warning lights, rotating steering wheel, gear selector,
+  handbrake, animated pedals, bucket seats with red harnesses running back to a harness bar, roll cage with
+  A-pillar tubes, a switch panel with flip covers, a **working trip meter** (distance + stage clock) on the
+  co-driver's side, fire extinguisher, spare wheel, pine-tree air freshener and a **sheep bobblehead** on
+  springs, hood (with its stripes) visible through the windscreen.
+- **Real mirrors**: one wide backwards render feeds the rear-view and both side mirrors.
+- Driver and passenger **IK arms** with polygonal gloved hands: on the wheel (rotating with it), on the
+  handbrake, wiping the glass, reaching for door handles, holding the tablet by its edges, pointing. Each
+  occupant's head and torso is visible to the *other* player (see the crew below); the navigator wears a
+  head lamp.
+- **Free mouse look for both occupants.** The navigator captures the mouse like the driver: the mouse turns
+  their head (independently of the driver's view and never touching the steering), a centre crosshair grabs
+  objects, and whatever they hold stays in front of them while they look around.
+- **Spring-damper cabin motion** (no random shake): leaning in corners, pushed back on acceleration, nodding
+  on braking, bouncing over bumps, sharp directional jolts on impacts and heavy landings.
+
+### Crew, car and livery
+- **Characters** in the style of faceted low-poly cartoon heads: big **googly eyes** that blink, dart about,
+  stare at the tablet and pop wide open on big hits or going over the edge; worried brows, a nervous half
+  grin, an **open-face rally helmet** with a centre stripe, peak, intercom ear cups and a **mic boom**.
+  Race suits with side panels, chest band, patches, zip, belt, shoulder pads, gloves and racing boots;
+  seated crew wear harnesses and a HANS collar.
+- **Your look** (PIT GARAGE, from the menu and the lobby): 8 helmets, 8 race suits, 5 skin tones, 5 faces
+  (plain, moustache, shades, beard, monobrow) and 8 car liveries, with a SURPRISE ME button. The camera moves
+  in close and your character does a little twirl after each change. Saved in the browser, synced to the
+  room (validated by the server) and used on the stage: your co-driver sees exactly what you picked.
+- **The car wears the driver's livery**: body colour, a wide stripe and a pinstripe along the flanks, twin
+  stripes over the bonnet and roof, door number plates ("LEFT! LEFT! LEFT!", big 3), a windscreen sun strip,
+  rims and wing end plates in the accent colour. Rally kit outside: a **light pod** with four big lamps
+  (glowing at night), flared wheel arches, multi-spoke rims, a **rear wing**, sump guard, side skirts, red tow
+  straps at the tow hooks, big mud flaps, bonnet vents, roof scoop and exhaust.
+
+### Animals on the road
+- Every stage has **flocks of sheep** grazing by the road (a couple always on it), **cows** standing on the
+  road just after a corner (so they appear late) and, on longer countryside stages, a **tractor** with a
+  farmer and a flashing beacon. Placed per seed with their own random stream (the road itself is unchanged).
+- Sheep scatter when the car comes at speed - sometimes straight across the road in a panic - then calm down
+  and graze again. Cows don't care, unless you **honk**: then they amble off the road. The tractor sets off
+  when you come up behind it, trundles along its side of the road at 20 km/h and pulls over later.
+- They are real physics bodies (a cow is a proper obstacle): the car reports an animal impact, hit animals
+  **tumble** in a cloud of fleece, get back on their feet and run off. Baas, moos and the tractor's putt are
+  synthesised and panned.
+- **On the tablet**: sheep, cow and tractor icons at their live positions, with a pulsing red ring when they
+  are on the road. The navigator has a key for it (`-`: COW! / SHEEP! / TRACTOR!, whatever is ahead) and the
+  AI co-driver warns you in solo practice.
+- The driver's client simulates them and streams their poses with the hay bales; the navigator interpolates.
+
+### Navigation tablet
+- A rugged 3D tablet with orange bumpers; the screen is a live canvas texture (20 fps): heading-up map,
+  route line, passed road, turn markers coloured by severity, checkpoints, jumps, puddles, finish, the car,
+  next instruction + distance, "then / into" chains, STRAIGHT FOR 100, BRAKE NOW!, JUMP ahead, WRONG WAY,
+  TURN MISSED, progress bar, stage time and checkpoint counter.
+- Simulated in a separate **car-local Rapier world** whose gravity is *(g − car acceleration)*, so cornering,
+  braking, bumps, crashes (impulse shocks) and jumps (weightless) move everything realistically without
+  tunnelling through a fast-moving car.
+- Grab / hold (velocity-driven constraint, so it never teleports through the cabin), move, rotate, tilt,
+  closer/farther, release, **drop on impacts or when grip runs out under sustained g-forces**, slide across
+  the dash / seats / floor, pick up again (reach limit, lean to reach further).
+- Detects when the screen faces away from the navigator or is out of view (HUD warning; pace-note reading
+  disabled). The driver can only see route info if the tablet is physically visible from their seat.
+
+### Stages & navigation
+- Deterministic procedural stages from a seed (identical on server and clients, verified by checksum):
+  clothoid-smoothed corners (easy → hairpin, chicanes), straights, self-intersection avoidance, elevation from
+  terrain noise with grade limits, **jumps**, camber, crown, bumps and potholes, ditches and embankments,
+  dense instanced vegetation, rocks, marker posts, hay bales, checkpoints, start/finish gates.
+- **Mountain map**: one big mountainside (25-40° on average, terraced into steep rock bands and gentler
+  benches, with spurs and gullies down the fall line, a valley floor below and snow-capped peaks above). The
+  road is traced along the contours with a slight downhill bias, so it winds in and out of gullies and around
+  spurs (blind corners) and switches back down the mountain with tight hairpins: rock cut into the hill on
+  one side, the ground falling away on the other. Exposure varies along the road - sheer drops right at the
+  edge, narrower ledges, then wider recovery areas and hairpin platforms - and so does the road width
+  (about 4.1 to 6.1 m). Big rock formations on the inside of uphill corners hide the exit; boulders, shrubs,
+  alpine grass and scattered conifers on the slopes; haze and distant peaks. Road, collision, terrain and the
+  tablet's route all come from the same stage data.
+- **Falling off the mountain** is plain physics: there are no invisible walls. Leave the road on the drop
+  side and the car goes over, tumbles, bounces and slides down the terrain colliders, hitting rocks and
+  trees, and may come to rest on a bench or a lower bend - or slide all the way to the valley. Both players
+  feel the same crash (it's the one shared car).
+- **Fell off? Back to the checkpoint**: once the car is off the road and more than 4.5 m below it (over the
+  edge, or out of the map), the authority waits 2.5 s and then puts it back on the road at the last
+  checkpoint passed (or the start line) - for both players at once. No extra time penalty: the lost ground
+  is the price. (The tow-hook recovery is still there for a car that's stuck but hasn't fallen off.)
+- **Over-the-edge camera**: once the car has left the road and dropped well below it, both occupants' views
+  ease out into a third-person camera that hangs above and uphill of the car and follows the tumble (it
+  never rolls with the car, stays clear of the hillside and boulders, and pulls in when trees would hide
+  the car). Back to the cockpit once the car has settled, when it's reset onto the road, or after 14 s.
+  Decided locally from the shared car state, so it's purely visual.
+- **No shortcuts**: progress, checkpoints and the finish only count on the road's level and within reach of
+  where the car has legitimately driven to. A car that falls onto a lower bend (and stays on that road)
+  gets an "off your route" hint, and the emergency reset puts it back where it left the road (never further on).
+- Corner analysis from the real curvature: KEEP / EASY / (medium) / HARD / HAIRPIN LEFT/RIGHT with target
+  speeds, "into" chains, braking-distance based BRAKE NOW, jump warnings.
+- Race tracking: checkpoints (+10 s penalty if skipped), missed turns, wrong way, finish, odometer, top
+  speed. Results: time, penalties, distance, crashes, missed turns, checkpoints, tablet drops, average/top
+  speed, grade (S-D) and a team title.
+
+### Cabin chaos
+- **Mud**: puddles splatter the windscreen (deterministic procedural splats, same on both screens); off-road
+  driving and terrain impacts add dirt. **Wipers are manual and off by default**: each `V` press runs exactly
+  one sweep out and back to the rest position (a press during the return stroke queues one more), synced to
+  both players through the authority; the glass is cleaned only where the blades actually pass, as they
+  pass. **Hand-wipe** with `C` cleans where you look but takes a hand off the wheel.
+- **Doors**: latched doors rattle on rough ground; hard (side) impacts or long rough off-road stretches can
+  unlatch them (decided by the server). Open doors swing on a hinge sim with limits, driven by g-forces and
+  airflow, bang against their stops, add drag + yaw pull and wind roar until closed.
+- **Loose objects**: water bottle, coffee cup on the dash, pace-note book, snack bag; all thrown around by the
+  cabin physics, with rattle sounds.
+
+### Night stages & the head lamp
+- At night only the headlights, the moon and the navigator's **head lamp** light the world. It's strapped to
+  the navigator's forehead and its real spotlight follows their head and view direction - in the car and on
+  foot. `G` switches it on / off (split screen: `L`). It lights the tablet, the cabin, the road, the tow hooks.
+  Night shadows are on.
+- The tablet has a **non-backlit (transflective) screen**: at night it has no glow at all, so it's readable
+  only where the lamp's light lands on it - look at it and it's lit, look out of the window and it goes dark.
+  Pace-note reading and the AI co-driver use the same rule: the lamp's cone, distance falloff and screen
+  angle must deliver enough light to the screen. By day the lamp isn't needed.
+- **Blinding:** look the driver in the eyes with the lamp on (within the cone, with clear line
+  of sight past the cockpit, the bodywork, the tablet, loose objects and the navigator's own arms; up to 5 m, so
+  it works from outside the car too) and the *driver's* view
+  flashes white and fades over about 1.5 s; while the beam stays on their face they stay partly dazzled.
+  Only the driver's screen is affected and the controls keep working. It re-arms after the beam has been away
+  for 0.3 s (at most every 0.7 s). The beam itself is wide with a soft edge. Online, the lamp's
+  on/off state is synced and its direction comes from the navigator's synced head (or on-foot) look.
+
+### Pointing
+- Hold `X`: the navigator's right arm points where they're looking, stopping short of the dash, roof and door
+  (no clipping or stretching). Release and it returns. It works while the other hand holds the tablet.
+- The driver sees it in the shared 3D cabin. Online, the exact hand target is synced in the cabin snapshot.
+  There are no arrows or HUD hints for the driver.
+
+### Getting stuck, getting out, pulling the car free
+- The authority flags **STUCK** only when the driver is pressing a pedal and the car still doesn't move for
+  4 s, so normal stops never count. Then the HUD suggests getting out. The emergency reset (hold `R`, +5 s)
+  stays a separate last resort.
+- `E` (split screen: driver `E`, navigator `P`) gets you out once the car has (almost) stopped. Seats are
+  server-owned. You stand next to your door in a first-person on-foot camera, walk with collision against
+  the car body, trees and boulders, and follow the terrain. The other player sees your low-poly avatar.
+- Tow hooks front and rear: hold the grip button next to one, then walk away (e.g. backwards). The arm is
+  taut at arm's length, so walking away turns into a **pull force on the car's rigid body** at the hook
+  (up to 1500 N per player, slightly upwards). Both players' forces are applied to the same vehicle
+  simulation and add up. Release and the force stops.
+- An empty car sits in neutral on its brakes, which are released only while someone is pulling. Terrain,
+  slope, mass and the car's angle all matter: one player can't drag the 980 kg car up a 12° bank, two
+  can (see `scripts/recovery-test.ts`). No teleporting, no scripted movement.
+- Back at your door, `E` gets you back into your own seat.
+
+### Stage finish
+- Crossing the finish line (the authority's race event, so it's the same moment on both clients and can
+  only fire once) starts a cinematic: the car keeps rolling, steering along the road and braking gently,
+  while the camera eases out of your eyes into a slow chase shot around the car (a spring arm pulls in when
+  trees or terrain would block it). Letterbox bars, **STAGE COMPLETE** with your time and a short
+  synthesised fanfare + crowd cheer. The results screen follows after 4.2 s. The physics timestep is never
+  changed.
+
+### Difficulty code (shared by every map and every player in a room)
+The host picks it in the lobby (or you in the menu for local games); it is part of the stage settings, so
+everyone in a room drives exactly the same stage under the same rules.
+
+| | `RALLY_STANDARD` | `RALLY_HARD` | `RALLY_EXPERT` |
+| --- | --- | --- | --- |
+| Road width (countryside / mountain) | 5.1 m / as generated | -12% / -6% | -22% / -12% |
+| Corner mix (countryside) | classic | more hard corners, hairpins, chicanes | most |
+| Blind crests before tight corners | normal | x1.5 | x2 |
+| Mountain drops | as generated | steeper | steepest |
+| Driver sight distance (fog) | full | 72% | 50% |
+| Tablet route preview / next-call banner | 760 m / 420 m | 520 m / 260 m | 340 m / 160 m |
+| AI navigator call distance | full | 85% | 70% |
+| Puddles / livestock | normal | x1.4 / x1.3 | x1.8 / x1.6 |
+| Handling help | grip, ABS, stability control, some corner braking, edge nudge | a little grip, ABS, light stability | none (the raw car) |
+
+`RALLY_STANDARD` reproduces the classic stages exactly (same seed = same road and checksum). Each map
+applies the code to its own terrain: the countryside gets a harder corner mix, the mountain - whose road
+follows the contours - gets narrower ledges and sheerer drops instead.
+
+### Game modes
+| Mode | Players | Cars | Crew per car |
+| --- | --- | --- | --- |
+| CO-OP | 2 | 1 | driver + navigator (the original game) |
+| 1 v 1 | 2 | 2 | driver + **AI navigator** |
+| 1 v 1 v 1 | 3 | 3 | driver + AI navigator |
+| 1 v 1 v 1 v 1 | 4 | 4 | driver + AI navigator |
+| 2 v 2 | 4 | 2 | driver + human navigator |
+
+- The lobby only offers the modes made for the number of players in the room (1-2: co-op, 1v1 · 3: 1v1v1 ·
+  4: 1v1v1v1, 2v2) and switches by itself when someone joins or leaves, staying close to the host's last pick
+  (co-op grows into 2v2, 1v1 into 1v1v1 and 1v1v1v1). Players can switch roles any time without leaving;
+  two of the same role is allowed, the race just waits until each car has a driver and a navigator.
+- The host picks the mode in the lobby; the lobby shows the players needed / connected, one card per car,
+  free seats, and who is waiting without a seat. In 2v2 players pick their crew (JOIN) and their role; in
+  the one-driver modes everybody drives. The race only starts with the exact number of players, all seated,
+  every crew complete and everybody ready.
+- Every car has its own physics (on its driver's computer) and its own server referee (checkpoints, missed
+  turns, crashes, penalties, the stage clock); all cars share the same stage, start and finish. The other
+  crews' cars are streamed to everyone (~15 Hz) and drawn with their livery, crew and a name tag in the crew
+  colour, and as coloured dots on the tablet. Rally "ghost" rules: cars don't collide, and a car is hidden
+  while it is on top of you (everybody starts on the same line).
+- Live positions on the HUD (P2/4 and the field) and on the results screen. When the first car finishes,
+  the others have 60 s to get home, then they are classified DNF. Positions go by final time including
+  penalties. A player who quits mid-race is DNF and the race goes on for everybody else.
+- **AI navigator** (one-driver modes, and solo practice): it holds the physical tablet in the passenger
+  seat and reads the actual route - corner severity and direction, "into" chains, braking, jumps,
+  hairpins, animals on the road, the finish - at a distance based on your speed and the difficulty. Its
+  timing is deliberately human: usually a little early or late, now and then much too late, so a good
+  human navigator is still faster. Missed turns and wrong way are called by the server referee.
+- Voice chat is between crew mates (co-op, 2v2).
+
+### Player statistics
+- Every **online** race that reaches a valid end is recorded by the server, from its own referees, for
+  every human in it: races, finished, wins / losses (versus modes; co-op counts as a race only), crashes,
+  missed turns, best and average stage time, distance, recoveries (resets), role, team position and crew,
+  per map / difficulty / length. Each (race, player) pair is stored once (a database constraint), so a
+  finish that fires twice can't count twice. Clients cannot submit results: there is no endpoint for it.
+- **YOUR STATS** (main menu): totals, win rate, best / average times, driver vs navigator, performance by
+  map and difficulty, recent results.
+- **Profiles go by name**: whitespace is normalised and capitals don't matter (`Balint`, `balint` and
+  `BALINT` are one profile); a returning player's stats are never overwritten. That is a convenience, not
+  authentication - anyone can type your name - so a name can be **protected with a recovery code**
+  (`LLL-XXXX-XXXX`, shown once, stored only as a salted scrypt hash on the server and in this browser).
+  A protected profile only collects races from players who present the code; entering the code on another
+  device unlocks it there. The public profile endpoint never returns the code or its hash.
+- Storage: **Postgres**. With `DATABASE_URL` set the server uses that database; without it, an embedded
+  Postgres (PGlite) in `./.data/stats` (or `STATS_DB_DIR`). Nothing lives only in memory.
+
+### Multiplayer
+- Node.js + Socket.IO rooms with 4-letter codes (up to 4 players), lobby with role selection, ready states, host stage
+  settings, loading sync with stage checksum, countdown, start/finish/restart (both vote: retry / new road)
+  and back-to-lobby.
+- **Server-authoritative game rules** (`src/shared/authority/GameAuthority.ts`, also used by the offline
+  session): role validation, session membership, rate limits, car-state validation (finite values, speed
+  cap, max displacement per time, world bounds, countdown hold) with corrections, server-issued resets,
+  checkpoint/turn/finish tracking, race clock, crash counting, impact plausibility checks, door/mud
+  decisions, tablet ownership, cabin-bounds clamping, callout validation.
+- Compact binary snapshots (`Float32Array`): car (+ driver on foot) at 30 Hz, cabin (tablet, 4 loose objects,
+  held object, head look, head lamp / pointing flags, navigator on foot + pull force) at 20 Hz,
+  hay bales (while moving) and the animals near the car at 10 Hz (reliable, so they are never dropped behind
+  the car state). Wiper sweeps, seat changes (get out / in) and the finish are
+  authority events. The server sanitises on-foot positions, rejects tow-hook grips from too far away and
+  clamps pull forces. Remote state goes through a jitter buffer with clock-offset estimation, Hermite
+  position interpolation and quaternion slerp.
+- Disconnect pause, reconnection with seat tokens, transparent Socket.IO reconnects, clear connection status
+  in menu/lobby/HUD.
+- Optional **WebRTC voice chat** (perfect-negotiation signalling over Socket.IO, mute, push-to-talk, mic
+  meter).
+- Callouts: navigator hotkeys, pace-note reading, contextual automatic reactions decided by the server
+  ("NO, THE OTHER LEFT!" when the driver steers the wrong way right after a call, "WHY ARE YOU STILL
+  ACCELERATING?!", "WE MISSED IT!", "WRONG WAY!", "I DROPPED THE TABLET!", "OUCH!") with cooldowns, shown as
+  subtitles and spoken with text-to-speech (toggleable).
+
+### Audio (all procedural WebAudio)
+Engine (a custom 4-cylinder harmonic spectrum: firing order plus a soft half-order rumble, a smooth
+low-pass that opens with load and revs, an exhaust boom, the harsh top end cut, slight uneven combustion
+at idle, a soft rev limiter and a few quiet pops after lifting off at high revs), road rumble, gravel
+pings, tyre scrub/squeal, wind (louder with open doors), wipers motor + squeak, horn, impacts scaled by
+strength and panned to the hit side, suspension thumps, tablet/object clacks, door rattles/bangs/slams,
+splashes, bush rustle, UI clicks, countdown beeps, checkpoint chime, finish fanfare + crowd cheer. Independent volumes: master, engine,
+environment, collisions, voice, interface, music.
+
+**Music** (also synthesised, a look-ahead step sequencer on the WebAudio clock, crossfading between tracks):
+a laid-back 96 bpm groove in the menu, garage, lobby and results (electric-piano chords, round bass, soft
+swung drums, now and then a little melody), and a dramatic 138 bpm E-minor track on the stage (pulsing bass,
+dark pads, driving drums) that builds with your speed - 16th hats, an arpeggio, brighter pads, a pushing
+kick. Kept well under the car: at the default volume the stage music sits ~15-18 dB below the engine.
+
+### UI
+Main menu and lobby float over a live 3D service park (the rally car under a start banner, in the chosen
+stage's look: countryside or mountain, day or night). In the menu you stand next to the car; in the lobby both
+crew members stand there in their own helmets and suits with name tags (a ghost marks an empty seat, a ring
+marks you, ready players wave) and the car wears the driver's livery. CHANGE YOUR LOOK opens the pit garage
+over the same scene. Phones get a stacked layout with a clear window onto the crew. Also: DAY / NIGHT,
+create/join, loading screen, HUD (minimal for the driver: speed, gear,
+time, checkpoint count, warnings; navigator: grip meter, tablet visibility / darkness, hover hints; on foot:
+tow-hook and door prompts, pull strength), hold-`Tab` controls overlay, finish cinematic, subtitles,
+toasts, pause menu with full controls reference, settings (volumes, sensitivity, FOV, cabin motion
+intensity, quality, TTS, subtitles, auto callouts, push-to-talk, FPS), help screen, results. WebGL-unavailable error
+screen. Handles resizing, split screen, focus loss (offline modes auto-pause when hidden).
+
+---
+
+## Project structure
+
+```
+server/                 Node.js game server
+  index.ts              HTTP + Socket.IO + static hosting of dist/
+  rooms/                Room (lobby, phases, reconnection), RoomManager
+  networking/           Socket event handlers (rate limits, payload checks)
+  validation/           Input sanitisation, rate limiter
+  stats/                StatsStore: player profiles + race results in Postgres (or embedded PGlite)
+src/
+  shared/               Code shared by server and client (pure TypeScript)
+    stage/              Stage generator, terrain base, pace-note analysis, animal placement
+    style.ts            Helmets, suits, skins, faces, liveries (shared with the server for validation)
+    difficulty.ts       RALLY_STANDARD / HARD / EXPERT
+    modes.ts            Game modes (co-op, 1v1, 1v1v1, 1v1v1v1, 2v2), standings
+    race/               Road locator, race tracker
+    authority/          GameAuthority: server-authoritative rules
+    protocol.ts         Typed Socket.IO events
+    snapshot.ts         Binary snapshot layouts
+  core/                 App flow, input, key bindings (single source of truth), settings, event bus, profiles (stats API)
+  rendering/            Renderer (split screen), sky/lighting, materials, particles, geometry helpers,
+                        crew (heads with googly eyes, helmets, race suits)
+  physics/              Rapier world wrapper, car-local cabin physics
+  vehicle/              Raycast vehicle controller, drivetrain, car spec, exterior model
+  cockpit/              Interior, gauges, occupants/IK arms, cabin motion, doors, windshield/mud/wipers,
+                        navigator's head lamp
+  world/                Terrain field, chunked terrain, road, vegetation, props (gates, hay bales),
+                        animals (sheep, cows, tractor: AI, physics, sync, models)
+  navigation/           Minimap (tablet screen), callouts + AI co-driver
+  tablet/               Tablet model, loose object definitions
+  interactions/         Driver and navigator controls
+  multiplayer/          Session interface, local/online sessions, snapshot interpolation, voice chat
+  audio/                Audio engine, car sounds, music
+  game/                 Game orchestration, seat camera rigs, car render state, on-foot players,
+                        finish cinematic, opponents (the other crews' cars)
+  ui/                   DOM UI and styles, controls overlay rows, LobbyScene (3D menu/lobby backdrop)
+scripts/                Headless test harnesses (see below)
+public/assets/          Favicon
+```
+
+## Automated checks
+
+```bash
+npm run typecheck                    # strict TypeScript for client and server
+npm test                                # sim-test (both maps) + cabin + recovery + fall + animal tests below
+npx tsx scripts/sim-test.ts 42          # headless: autopilot drives a whole countryside stage
+npx tsx scripts/sim-test.ts 42 mountain # ... and a whole mountain stage
+npx tsx scripts/cabin-test.ts           # headless: tablet/objects under g-forces, one-handed grip
+npx tsx scripts/recovery-test.ts        # headless: car in a ditch, one vs two players pulling on the tow hook
+npx tsx scripts/fall-test.ts 42         # headless: off the edge of the mountain: falls, tumbles, lands, no shortcut
+npx tsx scripts/animal-test.ts 42       # headless: sheep graze + scatter, cow hit / knocked over / gets up, honk, tractor, sync
+npx tsx scripts/steer-test.ts           # headless: steering response (yaw rate) at 30 / 60 / 100 / 140 km/h
+npx tsx scripts/assist-test.ts          # headless (~5 min): a clumsy bot with each difficulty's handling help - the help must help
+npx tsx scripts/handling-test.ts        # headless: lane change, long corner, mud, handbrake turn per difficulty
+npx tsx scripts/sim-test.ts 42 mountain expert   # the autopilot on any map / difficulty
+npx tsx scripts/stats-test.ts           # starts a server, plays real races, kills / restarts it: stats persistence
+npx tsx scripts/modes-test.ts http://localhost:3101   # needs a server (FINISH_WINDOW_MS=6000): all game modes
+npm run test:net                     # end-to-end multiplayer protocol test (needs a running server)
+```
+
+`modes-test` drives real races (scripted cars on the actual stage) through the game modes: lobby seating and
+mode rules, a full room, 1v1 with the AI navigator's tablet, live standings, crew isolation (a crew's
+messages never reach the other crew; the other car arrives as an opponent stream), a 2v2 race, a
+four-car race with a DNF after the finish window, and a player quitting mid-race.
+
+`net-test` connects two Socket.IO clients and checks room creation/joining, sanitisation, full rooms, role
+and host rules, personal looks (shared, invalid ones ignored), load/countdown sync, car-state relay, animal
+pose relay, the COW! callout, role enforcement, teleport rejection + correction,
+callout authorisation, resets, manual wiper cycles (one per press, driver only, relayed to both), getting
+out only when stopped, server-owned seat flags, tow-hook grip / pull-force validation, getting back in only
+at your own door, impact-driven door pops, disconnect pause, seat-token reconnection and token hijack
+protection.
+
+---
+
+## Known limitations
+
+- **Authority model:** the driver's client simulates the car (zero input latency) and the navigator's client
+  simulates the cabin; the server validates and owns all game rules, timing and chaos events but does not
+  re-simulate rigid-body physics. A modified client could still drive "plausibly fast" within the
+  validation limits. Running Rapier on the server with client-side prediction would close that gap at the
+  cost of complexity.
+- **Background tabs:** browsers throttle hidden tabs. The game keeps simulating at a reduced rate, but the
+  smooth experience needs both game windows visible. Offline modes auto-pause when hidden.
+- **Voice chat** needs a secure context (`https://` or `localhost`) and uses public STUN only; peers behind
+  strict NATs need a TURN server (`VITE_STUN_URLS` accepts TURN URLs). Discord or similar works everywhere.
+- Text-to-speech voices depend on the browser/OS; it can be disabled in settings.
+- Remote hay bales and loose objects are interpolated from snapshots (cosmetically smooth, not physically
+  re-simulated on the receiving side).
+- Rooms live in server memory: restarting the server ends running sessions (statistics are in the database).
+- **Versus:** cars don't collide (ghost rules), and each crew has its own livestock and hay bales (they are
+  simulated by that crew's driver). Offline modes (solo, split screen) are not recorded in the statistics:
+  only the server's referees are trusted.
+- **Profiles by name** are a convenience, not accounts: an unprotected name can be used by anyone, and a
+  lost recovery code can't be recovered (there is no email).
+- The headless autopilot used by `sim-test` is crude on the mountain: on HARD / EXPERT it sometimes needs
+  resets or runs out of time on the narrow ledges (the stages are meant for a navigator).
+- Steering wheel rotation is visually clamped (no hand-over-hand animation).
+- Desktop only (keyboard + mouse or gamepad); touch input is not supported. On-foot movement and the
+  navigator's interactions are keyboard + mouse only (the gamepad drives the car).
+- **Recovery:** the pull force comes from the walking player, who is tethered to the hook at arm's length;
+  there's no rope or winch, and players can only pull, not push. Players don't collide with each other or
+  with hay bales. Online, the navigator's pull reaches the driver's car simulation through the 20 Hz cabin
+  snapshot, so it lags by the snapshot delay (about 100-150 ms).
+- **Night readability** for gameplay (reading notes, the AI co-driver, the HUD warning) uses the head
+  lamp's analytic cone/falloff, not the rendered pixels, so a hand shadowing part of the screen doesn't
+  affect it. The **blinding** check targets the driver's eye point; the driver's own arms and the steering
+  wheel rim don't block the beam, and glass never does (mud on the windscreen doesn't either).
+- At night the navigator's body is barely lit, so from the driver's seat you mostly see the lamp's beam
+  rather than the navigator wearing it.
+- **Speed blur** is a screen-space radial blur from the direction of travel, not true per-object motion
+  vectors. Another player standing outside the car would be drawn sharp on top of the blurred scenery, but
+  the blur only switches on above ~55 km/h, when nobody can be outside. Views outside the car (on foot,
+  finish camera) are never blurred.
+- **Mountain:** the road width varies (about 4.1-6.1 m) but its cross-section stays a simple ribbon, so
+  the drop-side edge can overhang the slope a little at the most exposed spots. The terrain mesh has about
+  2 m resolution, so cuts and drops at the road edge are faceted. Terrain only has colliders within about
+  110 m of the road; a car tumbling even further away is reset by the existing "lost far off the route"
+  rule. On slopes steeper than about 31°, even a braked car keeps sliding, so some falls end in the
+  valley - that's when the emergency reset is the way back. The car can only be reset to where it left
+  the road (no further), which is deliberate.
+- The turn-in assist is a gameplay aid, not tyre physics; it fades out completely by ~115 km/h.
+- The finish cinematic camera avoids trees, boulders and terrain, but bushes can briefly cross the shot.
+  Most stages have ~90 m of straight road after the finish line. A few seeds have only ~30 m, and the car
+  then rolls off the end onto the verge.
